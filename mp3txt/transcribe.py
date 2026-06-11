@@ -41,9 +41,9 @@ class Transcriber:
                  language: str | None = None, device: str = "cpu"):
         self.model_name = model_name
         self.device = device  # "cpu" 또는 "cuda" (NVIDIA GPU)
-        # CUDA에서는 int8 대신 float16이 표준 (빠르고 정확)
+        # CUDA에서는 int8 가중치 + fp16 연산이 기본 — VRAM 적은 GPU(4GB)에서도 안전
         if device == "cuda" and compute_type == "int8":
-            compute_type = "float16"
+            compute_type = "int8_float16"
         self.compute_type = compute_type
         # "auto"/"" 는 자동 감지(None)로 정규화
         self.language = None if language in (None, "", "auto") else language
