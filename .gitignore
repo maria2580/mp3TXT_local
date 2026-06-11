@@ -1,0 +1,23 @@
+# Claude Code 세션 설정
+.claude/
+
+# 가상환경
+.venv/
+.venv-ov/
+
+# 파이썬 캐시
+__pycache__/
+*.pyc
+
+# 변환된 OpenVINO 모델 (optimum-cli로 재생성 가능, 약 780MB)
+models/
+
+# 테스트 미디어·생성물 (테스트 스크립트 .py는 커밋 대상)
+test_audio/*.mp3
+test_audio/*.mp4
+test_audio/*.mkv
+test_audio/*.wav
+test_audio/*.txt
+
+# 비밀 토큰
+token.txt

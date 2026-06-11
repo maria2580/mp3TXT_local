@@ -1,0 +1,125 @@
+# mp3TXT_local
+
+음성 파일(mp3 등)을 **완전 로컬**에서 텍스트로 변환하는 도구입니다. 인터넷 전송 없이
+화자분리(누가 말했는지)까지 수행하며, 실시간 모드에서는 마이크와 **컴퓨터 재생 소리**를
+즉시 받아쓰고 선택적으로 번역합니다.
+
+| 기능 | 엔진 | 비고 |
+|---|---|---|
+| 전사(STT) | faster-whisper (CPU int8) | 배치: large-v3-turbo, 실시간: small (변경 가능) |
+| 화자분리 | pyannote speaker-diarization-community-1 | Hugging Face 토큰 필요 (무료) |
+| 번역 | Argos Translate | 완전 로컬, 첫 사용 시 언어팩 다운로드 |
+| 시스템 소리 캡처 | WASAPI loopback (pyaudiowpatch) | 마이크와 동시 사용 가능 |
+
+## 1. 배치 변환 — 우클릭 "TXT 추출하기"
+
+1. 음성 파일(mp3/wav/m4a/flac/ogg/opus/wma/aac 등) 또는 **동영상 파일**
+   (mp4/mkv/avi/mov/wmv 등) 우클릭 → **TXT 추출하기(mp3TXT_local)**
+
+   > **윈도우 11 주의**: 기본 우클릭 메뉴에는 안 보입니다. 메뉴 맨 아래
+   > **`추가 옵션 표시`** 를 누르거나, **Shift를 누른 채 우클릭**하면 나타납니다.
+2. 같은 폴더에 같은 이름의 `.txt` 저장 (이미 있으면 `이름 (1).txt` … 자동 회피)
+
+동영상은 음성 트랙만 추출해 같은 파이프라인으로 변환합니다 (중간 mp3 불필요).
+mp3 파일도 따로 남기려면 `--save-mp3` 옵션 또는 설정 `save_mp3_from_video: true`
+(ffmpeg 필요 — 동영상과 같은 폴더에 mp3 저장).
+
+출력 형식:
+
+```
+참가자 1 (00:00:05): 안녕하세요. 오늘 회의를 시작하겠습니다.
+
+참가자 2 (00:00:12): 네, 개발 진행 상황부터 말씀드리겠습니다.
+```
+
+화자분리를 사용할 수 없으면(토큰 미설정 등) `(00:00:05): 내용` 형식으로 저장됩니다.
+
+## 2. 실시간 모드 — GUI 앱
+
+```powershell
+.venv\Scripts\python.exe realtime_app.py
+```
+
+- **입력 소스**: 마이크, 시스템 소리(컴퓨터에서 재생되는 모든 소리), 또는 둘 다
+- 발화가 끝날 때마다(무음 0.6초) 텍스트가 한 줄씩 추가됩니다
+- **번역**: `→ 한국어` 또는 `→ 영어` 선택 시 원문 아래에 번역문 표시 (Argos, 로컬)
+- [저장] 버튼으로 전체 기록을 txt로 저장, [항상 위] 체크박스 지원
+
+## 설치
+
+```powershell
+# 1) 가상환경 + 의존성 (이미 완료된 상태로 제공)
+uv venv --python 3.12 .venv
+uv pip install -r requirements.txt --python .venv\Scripts\python.exe
+
+# 2) 우클릭 메뉴 등록 (관리자 권한 불필요 - HKCU 사용)
+.venv\Scripts\python.exe mp3txt_local.py
+
+# 3) 화자분리용 Hugging Face 토큰 (무료, 최초 1회)
+#    a. https://huggingface.co/pyannote/speaker-diarization-community-1 약관 동의
+#    b. https://huggingface.co/settings/tokens 에서 Read 토큰 발급
+.venv\Scripts\python.exe mp3txt_local.py --set-token hf_xxxxxxxx
+
+# 4) 모델 미리 다운로드 (선택, 권장 - 첫 변환이 바로 시작되게)
+.venv\Scripts\python.exe mp3txt_local.py --setup
+```
+
+## 명령어
+
+```powershell
+.venv\Scripts\python.exe mp3txt_local.py                      # 우클릭 메뉴 등록
+.venv\Scripts\python.exe mp3txt_local.py --uninstall          # 메뉴 제거
+.venv\Scripts\python.exe mp3txt_local.py --set-token <토큰>   # HF 토큰 저장
+.venv\Scripts\python.exe mp3txt_local.py --setup              # 모델 사전 다운로드
+.venv\Scripts\python.exe mp3txt_local.py "회의.mp3"           # 수동 변환 (여러 파일 가능)
+.venv\Scripts\python.exe mp3txt_local.py "회의.mp3" --no-diarization  # 화자분리 없이
+.venv\Scripts\python.exe mp3txt_local.py "강의.mp4" --save-mp3 # 동영상 변환 + mp3 저장
+.venv\Scripts\python.exe realtime_app.py                      # 실시간 GUI
+```
+
+## 설정
+
+`%USERPROFILE%\.mp3txt_local\config.json` (없으면 기본값):
+
+| 키 | 기본값 | 설명 |
+|---|---|---|
+| `hf_token` | `""` | 화자분리용 토큰 (환경변수 HF_TOKEN도 인식) |
+| `batch_model` | `large-v3-turbo` | 파일 변환 모델. 정확도 우선이면 `large-v3` (훨씬 느림) |
+| `realtime_model` | `small` | 실시간 모델. 품질 우선이면 `large-v3-turbo` (지연 증가) |
+| `compute_type` | `int8` | CPU 권장값 |
+| `language` | `auto` | `ko` 고정 시 감지 오류 방지 + 약간 빨라짐 |
+| `num_speakers` | `null` | 화자 수를 알면 지정 (정확도 향상) |
+
+## 동작 세부 사항
+
+- **CPU 전용 설계**: 이 PC(GPU 없음, i5-1335U) 실측 — 44초 음성을 large-v3-turbo로
+  65초에 변환 (약 1.5배). 1시간 녹음이면 약 1.5시간 + 화자분리 시간이 듭니다.
+  첫 실행 시 모델 다운로드(수백 MB~1.5GB)가 있습니다.
+- **실시간 모드 처리 한계**: 전사가 실시간을 못 따라가면 오래된 발화부터 자동 생략하고
+  안내를 표시합니다. 기본 모델(small)은 이 PC에서 실시간 처리가 가능합니다.
+- **메뉴 등록 위치**: `HKCU\Software\Classes\*\shell\mp3TXT_local` + `AppliesTo` 확장자
+  필터를 씁니다. (`SystemFileAssociations`의 HKCU 브랜치는 이 PC의 Windows 11에서
+  Explorer가 메뉴에 표시해 주지 않아 위치를 옮겼습니다.)
+- **다중 선택**: 여러 파일을 한꺼번에 변환하면 뮤텍스로 한 번에 하나씩 차례로 처리합니다.
+- **저장 위치 대체**: 음성 파일 폴더에 쓸 수 없으면 자동으로 `내 문서`에 저장합니다.
+  변환 시작 전에 출력 파일을 먼저 확보합니다.
+- **화자분리 폴백**: 토큰이 없거나 모델 로드에 실패하면 변환을 중단하지 않고
+  타임스탬프만으로 저장합니다.
+- **시스템 소리 캡처**: WASAPI loopback은 소리가 재생 중일 때만 프레임이 들어옵니다.
+  아무것도 재생되지 않으면 (당연히) 아무것도 전사되지 않습니다.
+- **개인정보**: 모든 추론이 이 PC 안에서 일어납니다. 모델/언어팩 다운로드 시에만 인터넷을 씁니다.
+
+## 구성 요소
+
+| 경로 | 설명 |
+|---|---|
+| `mp3txt_local.py` | 배치 엔트리 (설치/제거/변환) |
+| `realtime_app.py` | 실시간 GUI 런처 |
+| `mp3txt/config.py` | 설정 관리 |
+| `mp3txt/audio_io.py` | 오디오 디코드 (PyAV) |
+| `mp3txt/transcribe.py` | faster-whisper 래퍼 |
+| `mp3txt/diarize.py` | pyannote 화자분리 래퍼 |
+| `mp3txt/formatter.py` | 화자 배정 + "참가자 N (hh:mm:ss):" 포맷 |
+| `mp3txt/translate.py` | 번역 모듈 (Argos) |
+| `mp3txt/realtime/` | 캡처(WASAPI)·VAD 분할·전사 엔진·tkinter GUI |
+| `.venv\` | uv로 만든 Python 3.12 가상환경 |
