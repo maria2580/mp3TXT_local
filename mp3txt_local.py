@@ -214,8 +214,11 @@ def _convert(audio_path, cfg, no_diarization, out_file):
         print("오디오 디코드 중...")
         audio = audio_io.load_audio(audio_path)
         total_sec = audio_io.duration_sec(audio)
+        from mp3txt import engine_select
+        device = "cuda" if engine_select.cuda_device_count() > 0 else "cpu"
+        engine_label = "NVIDIA GPU" if device == "cuda" else f"CPU {cfg['compute_type']}"
         print(f"길이: {formatter.fmt_ts(total_sec)}  "
-              f"(모델: {cfg['batch_model']}, CPU {cfg['compute_type']})")
+              f"(모델: {cfg['batch_model']}, {engine_label})")
 
         # 1) 화자분리 (토큰 없으면 None → 타임스탬프만)
         turns = None
@@ -233,8 +236,6 @@ def _convert(audio_path, cfg, no_diarization, out_file):
         # NVIDIA GPU(CUDA)가 있으면 사용, 로드 실패 시 CPU로 강등.
         # (인텔 GPU는 워드 타임스탬프 미지원이라 배치에는 쓰지 않는다 —
         #  화자분리 정렬 정밀도가 우선)
-        from mp3txt import engine_select
-        device = "cuda" if engine_select.cuda_device_count() > 0 else "cpu"
         if device == "cuda":
             print("전사 중... [NVIDIA GPU] (최초 실행 시 모델 다운로드)")
         else:
