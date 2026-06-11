@@ -54,6 +54,14 @@ def diarize(audio: np.ndarray, hf_token: str | None, sr: int = 16000,
         print(f"안내: 화자분리 모델 로드 실패 — 화자 표기 없이 진행합니다.\n  ({e})")
         return None
 
+    # NVIDIA GPU가 있으면 파이프라인을 GPU로 (CUDA 빌드 torch 필요 — README 참고)
+    try:
+        if torch.cuda.is_available():
+            pipeline.to(torch.device("cuda"))
+            print("화자분리: NVIDIA GPU 사용")
+    except Exception as e:
+        print(f"안내: 화자분리 GPU 전환 실패 — CPU로 진행합니다. ({e})")
+
     try:
         torch.set_num_threads(max(2, (torch.get_num_threads() or 4)))
         waveform = torch.from_numpy(np.ascontiguousarray(audio)).unsqueeze(0)  # (1, N)

@@ -95,6 +95,25 @@ uv pip install -r requirements.txt --python .venv\Scripts\python.exe
 | `language` | `auto` | `ko` 고정 시 감지 오류 방지 + 약간 빨라짐 |
 | `num_speakers` | `null` | 화자 수를 알면 지정 (정확도 향상) |
 
+## NVIDIA GPU 가속 (선택)
+
+NVIDIA GPU가 있는 PC에서는 다음 두 가지를 설치하면 전사·화자분리가 GPU로 동작합니다.
+설치하지 않으면 GPU가 있어도 CUDA 장치 0개로 감지되어 CPU로 동작합니다 (정상 폴백).
+
+```powershell
+# 1) CUDA 빌드 torch (화자분리용 — 기본 PyPI torch는 Windows에서 CPU 전용)
+uv pip install --python .venv\Scripts\python.exe torch torchaudio --index-url https://download.pytorch.org/whl/cu128
+
+# 2) cuBLAS/cuDNN DLL (전사용 — faster-whisper의 CUDA 인식에 필요)
+uv pip install --python .venv\Scripts\python.exe nvidia-cublas-cu12 nvidia-cudnn-cu12
+
+# 3) 확인 (둘 다 0/False가 아니어야 함)
+.venv\Scripts\python.exe -c "from mp3txt import engine_select; print('CUDA 장치:', engine_select.cuda_device_count())"
+.venv\Scripts\python.exe -c "import torch; print('torch CUDA:', torch.cuda.is_available())"
+```
+
+이후 변환하면 "전사 중... [NVIDIA GPU]"와 "화자분리: NVIDIA GPU 사용"이 표시됩니다.
+
 ## 동작 세부 사항
 
 - **CPU 전용 설계**: 이 PC(GPU 없음, i5-1335U) 실측 — 44초 음성을 large-v3-turbo로

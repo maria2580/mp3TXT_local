@@ -20,9 +20,35 @@ ENGINE_LABELS = {
 }
 
 
+def add_nvidia_dll_dirs() -> None:
+    """pip로 설치한 nvidia-*(cuBLAS/cuDNN) 패키지의 DLL 폴더를 검색 경로에 추가.
+
+    Windows에서 'uv pip install nvidia-cublas-cu12 nvidia-cudnn-cu12'로 받은
+    DLL은 site-packages\\nvidia\\*\\bin에 있는데 기본 검색 경로가 아니라서
+    이걸 등록해야 ctranslate2가 CUDA를 인식한다. 없으면 조용히 무시.
+    """
+    import glob
+    import os
+    import site
+
+    if os.name != "nt":
+        return
+    try:
+        roots = list(site.getsitepackages())
+    except Exception:
+        roots = []
+    for root in roots:
+        for d in glob.glob(os.path.join(root, "nvidia", "*", "bin")):
+            try:
+                os.add_dll_directory(d)
+            except OSError:
+                pass
+
+
 def cuda_device_count() -> int:
     """ctranslate2(faster-whisper 엔진)가 보는 CUDA 장치 수. 실패하면 0."""
     try:
+        add_nvidia_dll_dirs()
         import ctranslate2
         return int(ctranslate2.get_cuda_device_count())
     except Exception:

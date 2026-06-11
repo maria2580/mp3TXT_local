@@ -53,6 +53,9 @@ class Transcriber:
         """모델을 로드(필요 시 다운로드)한다. 이미 로드됐으면 즉시 반환."""
         if self._model is not None:
             return
+        if self.device == "cuda":
+            from .engine_select import add_nvidia_dll_dirs
+            add_nvidia_dll_dirs()  # pip로 설치한 cuBLAS/cuDNN DLL 경로 등록
         from faster_whisper import WhisperModel
 
         kwargs = {}
