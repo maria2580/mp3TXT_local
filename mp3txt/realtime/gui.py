@@ -2,13 +2,19 @@
 """
 gui — tkinter로 만든 실시간 음성 → 텍스트 변환 창.
 
-장치·모델·언어·번역을 고르고 시작을 누르면 RealtimeEngine이 event_queue로
-보내 주는 결과를 100ms 주기로 폴링해 화면에 붙인다. 표준 라이브러리만 사용.
+두 가지 화면 모드:
+  - 전체 모드: 장치·모델·언어·번역·엔진 설정 + 대본 영역 + 하단 버튼
+  - 자막 모드: 테두리 없는 항상-위 오버레이 (투명도/글자 크기 조절,
+    드래그 이동, 모서리 크기 조절). 윈도우 라이브 캡션과 달리
+    지나간 내용을 스크롤로 볼 수 있고 복사·저장이 된다.
+
+엔진과는 event_queue 하나로 통신하며 100ms 주기로 폴링한다.
 """
 import queue
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 from typing import Optional
@@ -17,7 +23,7 @@ from .capture import AudioDevice, list_input_devices, list_loopback_devices
 from .engine import RealtimeEngine, TranscriptEvent
 
 TITLE = "mp3TXT_local — 실시간 음성 텍스트 변환"
-FONT = ("Malgun Gothic", 10)
+FONT_FAMILY = "Malgun Gothic"
 MODELS = ["small", "base", "medium", "large-v3-turbo"]
 LANGS = [("자동", None), ("한국어", "ko"), ("영어", "en"),
          ("일본어", "ja"), ("중국어", "zh")]
@@ -25,6 +31,17 @@ TRANSLATIONS = [("끔", None), ("→ 한국어", "ko"), ("→ 영어", "en")]
 ENGINES = [("자동", "auto"), ("NVIDIA GPU", "cuda"),
            ("인텔 GPU", "openvino-gpu"), ("CPU", "cpu")]
 POLL_MS = 100
+
+# 일반 모드 색
+LIGHT_COLORS = {"bg": "#ffffff", "fg": "#000000",
+                "마이크": "#1d4ed8", "시스템": "#15803d", "번역": "#6b7280"}
+# 자막 모드 색 (어두운 배경에 밝은 글씨)
+DARK_COLORS = {"bg": "#101010", "fg": "#f0f0f0",
+               "마이크": "#7eb6ff", "시스템": "#7fe3a0", "번역": "#a8a8a8"}
+CAPTION_BAR_BG = "#1c1c1c"
+CAPTION_BTN = {"bg": "#2a2a2a", "fg": "#e8e8e8",
+               "activebackground": "#3a3a3a", "activeforeground": "#ffffff",
+               "relief": "flat", "bd": 0, "padx": 8, "pady": 2}
 
 
 class RealtimeApp:
@@ -40,8 +57,17 @@ class RealtimeApp:
         self._loops: list[AudioDevice] = []
         self._cfg = self._load_config()
 
+        # 자막 모드 상태
+        self._caption_mode = False
+        self._saved_geometry = ""
+        self._drag_origin = None
+        self._resize_origin = None
+        self.caption_opacity = float(self._cfg.get("caption_opacity") or 0.85)
+        self.caption_font_size = int(self._cfg.get("caption_font_size") or 14)
+        self.text_font = tkfont.Font(family=FONT_FAMILY, size=10)
+
         root.title(TITLE)
-        root.geometry("720x560")
+        root.geometry("760x560")
         root.minsize(560, 400)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -60,86 +86,146 @@ class RealtimeApp:
         except Exception:
             return {}
 
-    def _save_config(self, model: str, lang: Optional[str],
-                     target: Optional[str], engine: str = "auto") -> None:
-        """선택한 설정을 영속화한다. 실패해도 동작을 막지 않는다."""
+    def _save_config(self, **updates) -> None:
+        """주어진 키만 갱신해 영속화한다. 실패해도 동작을 막지 않는다."""
         try:
             from .. import config
             cfg = config.load()
-            cfg["realtime_model"] = model
-            cfg["language"] = lang or "auto"
-            cfg["translation_target"] = target or ""  # 끔이면 빈 문자열
-            cfg["realtime_engine"] = engine
+            cfg.update(updates)
             config.save(cfg)
         except Exception:
             pass
 
     def _build_widgets(self) -> None:
+        ui_font = (FONT_FAMILY, 10)
         style = ttk.Style(self.root)
         for name in ("TLabel", "TButton", "TCheckbutton", "TCombobox"):
-            style.configure(name, font=FONT)
+            style.configure(name, font=ui_font)
 
         # 상단 설정 프레임
-        top = ttk.Frame(self.root, padding=8)
-        top.pack(fill="x")
-        top.columnconfigure(1, weight=1)
+        self.top = ttk.Frame(self.root, padding=8)
+        self.top.pack(fill="x")
+        self.top.columnconfigure(1, weight=1)
 
         self.mic_on = tk.BooleanVar(value=True)
-        self.mic_check = ttk.Checkbutton(top, text="마이크", variable=self.mic_on)
+        self.mic_check = ttk.Checkbutton(self.top, text="마이크", variable=self.mic_on)
         self.mic_check.grid(row=0, column=0, sticky="w")
-        self.mic_combo = ttk.Combobox(top, state="readonly", font=FONT)
+        self.mic_combo = ttk.Combobox(self.top, state="readonly", font=ui_font)
         self.mic_combo.grid(row=0, column=1, sticky="ew", padx=(6, 0), pady=2)
 
         self.loop_on = tk.BooleanVar(value=True)
-        self.loop_check = ttk.Checkbutton(top, text="시스템 소리", variable=self.loop_on)
+        self.loop_check = ttk.Checkbutton(self.top, text="시스템 소리", variable=self.loop_on)
         self.loop_check.grid(row=1, column=0, sticky="w")
-        self.loop_combo = ttk.Combobox(top, state="readonly", font=FONT)
+        self.loop_combo = ttk.Combobox(self.top, state="readonly", font=ui_font)
         self.loop_combo.grid(row=1, column=1, sticky="ew", padx=(6, 0), pady=2)
 
-        opts = ttk.Frame(top)
+        opts = ttk.Frame(self.top)
         opts.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         ttk.Label(opts, text="모델").pack(side="left")
         self.model_combo = ttk.Combobox(opts, state="readonly", values=MODELS,
-                                        width=14, font=FONT)
+                                        width=13, font=ui_font)
         self.model_combo.pack(side="left", padx=(4, 0))
-        ttk.Label(opts, text="언어").pack(side="left", padx=(10, 0))
+        ttk.Label(opts, text="언어").pack(side="left", padx=(8, 0))
         self.lang_combo = ttk.Combobox(opts, state="readonly",
                                        values=[lbl for lbl, _ in LANGS],
-                                       width=8, font=FONT)
+                                       width=7, font=ui_font)
         self.lang_combo.pack(side="left", padx=(4, 0))
-        ttk.Label(opts, text="번역").pack(side="left", padx=(10, 0))
+        ttk.Label(opts, text="번역").pack(side="left", padx=(8, 0))
         self.trans_combo = ttk.Combobox(opts, state="readonly",
                                         values=[lbl for lbl, _ in TRANSLATIONS],
-                                        width=10, font=FONT)
+                                        width=9, font=ui_font)
         self.trans_combo.pack(side="left", padx=(4, 0))
-        ttk.Label(opts, text="엔진").pack(side="left", padx=(10, 0))
+        ttk.Label(opts, text="엔진").pack(side="left", padx=(8, 0))
         self.engine_combo = ttk.Combobox(opts, state="readonly",
                                          values=[lbl for lbl, _ in ENGINES],
-                                         width=11, font=FONT)
+                                         width=10, font=ui_font)
         self.engine_combo.pack(side="left", padx=(4, 0))
         self.toggle_btn = ttk.Button(opts, text="시작", command=self._on_toggle)
         self.toggle_btn.pack(side="right")
 
         # 하단 상태바 (텍스트 영역보다 먼저 pack해서 공간 확보)
-        bottom = ttk.Frame(self.root, padding=(8, 2, 8, 6))
-        bottom.pack(fill="x", side="bottom")
+        self.bottom = ttk.Frame(self.root, padding=(8, 2, 8, 6))
+        self.bottom.pack(fill="x", side="bottom")
         self.status_var = tk.StringVar(value="대기 중")
-        ttk.Label(bottom, textvariable=self.status_var, anchor="w").pack(
+        ttk.Label(self.bottom, textvariable=self.status_var, anchor="w").pack(
             side="left", fill="x", expand=True)
         self.topmost_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(bottom, text="항상 위", variable=self.topmost_var,
+        ttk.Checkbutton(self.bottom, text="항상 위", variable=self.topmost_var,
                         command=self._on_topmost).pack(side="right")
-        ttk.Button(bottom, text="지우기", command=self._on_clear).pack(
+        ttk.Button(self.bottom, text="자막 모드", command=self._enter_caption).pack(
             side="right", padx=(0, 8))
-        ttk.Button(bottom, text="저장", command=self._on_save).pack(
+        ttk.Button(self.bottom, text="지우기", command=self._on_clear).pack(
+            side="right", padx=(0, 8))
+        ttk.Button(self.bottom, text="저장", command=self._on_save).pack(
+            side="right", padx=(0, 8))
+        ttk.Button(self.bottom, text="복사", command=self._on_copy).pack(
             side="right", padx=(0, 8))
 
-        # 중앙 텍스트 영역 (읽기 전용)
-        self.text = ScrolledText(self.root, wrap="word", state="disabled", font=FONT)
+        # 자막 모드 컨트롤 바 (자막 모드에서만 pack)
+        self._build_caption_bar()
+
+        # 중앙 텍스트 영역 (읽기 전용, 두 모드가 공유 — 히스토리 끊김 없음)
+        self.text = ScrolledText(self.root, wrap="word", state="disabled",
+                                 font=self.text_font, borderwidth=0)
         self.text.pack(fill="both", expand=True, padx=8, pady=(0, 4))
-        self.text.tag_configure("마이크", foreground="#1d4ed8")  # 파란색 계열
-        self.text.tag_configure("시스템", foreground="#15803d")  # 초록색 계열
-        self.text.tag_configure("번역", foreground="#6b7280")    # 회색
+        self._apply_colors(LIGHT_COLORS)
+
+    def _build_caption_bar(self) -> None:
+        """자막 모드 상단의 얇은 컨트롤 바 — 잡고 끌면 창이 움직인다."""
+        bar = tk.Frame(self.root, bg=CAPTION_BAR_BG, height=30)
+        self.caption_bar = bar
+
+        def btn(text, cmd, width=None):
+            b = tk.Button(bar, text=text, command=cmd,
+                          font=(FONT_FAMILY, 9), **CAPTION_BTN)
+            if width:
+                b.config(width=width)
+            b.pack(side="left", padx=(4, 0), pady=3)
+            return b
+
+        btn("설정", self._exit_caption)
+        self.caption_toggle_btn = btn("시작", self._on_toggle)
+        btn("복사", self._on_copy)
+        btn("저장", self._on_save)
+        btn("A−", lambda: self._caption_font_step(-2), width=3)
+        btn("A+", lambda: self._caption_font_step(+2), width=3)
+
+        tk.Label(bar, text="투명도", bg=CAPTION_BAR_BG, fg="#cccccc",
+                 font=(FONT_FAMILY, 9)).pack(side="left", padx=(10, 2))
+        self.opacity_var = tk.DoubleVar(value=self.caption_opacity)
+        scale = tk.Scale(bar, variable=self.opacity_var, from_=0.3, to=1.0,
+                         resolution=0.05, orient="horizontal", showvalue=False,
+                         length=90, bg=CAPTION_BAR_BG, fg="#cccccc",
+                         troughcolor="#333333", highlightthickness=0, bd=0,
+                         command=self._on_opacity)
+        scale.pack(side="left", pady=3)
+
+        close = tk.Button(bar, text="✕", command=self._on_close,
+                          font=(FONT_FAMILY, 9), **CAPTION_BTN)
+        close.pack(side="right", padx=(0, 4), pady=3)
+        # 크기 조절 그립 (오른쪽 아래 방향으로 드래그)
+        grip = tk.Label(bar, text="◢", bg=CAPTION_BAR_BG, fg="#777777",
+                        cursor="size_nw_se", font=(FONT_FAMILY, 9))
+        grip.pack(side="right", padx=(0, 2))
+        grip.bind("<ButtonPress-1>", self._resize_press)
+        grip.bind("<B1-Motion>", self._resize_drag)
+
+        # 빈 영역 드래그 → 창 이동
+        for widget in (bar,):
+            widget.bind("<ButtonPress-1>", self._drag_press)
+            widget.bind("<B1-Motion>", self._drag_motion)
+
+        self.caption_status = tk.Label(bar, text="", bg=CAPTION_BAR_BG,
+                                       fg="#999999", font=(FONT_FAMILY, 9),
+                                       anchor="e")
+        self.caption_status.pack(side="right", fill="x", expand=True, padx=6)
+        self.caption_status.bind("<ButtonPress-1>", self._drag_press)
+        self.caption_status.bind("<B1-Motion>", self._drag_motion)
+
+    def _apply_colors(self, colors: dict) -> None:
+        self.text.configure(bg=colors["bg"], fg=colors["fg"])
+        for tag in ("마이크", "시스템", "번역"):
+            self.text.tag_configure(tag, foreground=colors[tag])
 
     def _apply_config_defaults(self) -> None:
         """config 값을 콤보박스에 반영한다.
@@ -208,6 +294,107 @@ class RealtimeApp:
                   self.engine_combo):
             w.config(state=combo)
 
+    # ---- 자막 모드 ----
+
+    def _enter_caption(self) -> None:
+        if self._caption_mode:
+            return
+        self._caption_mode = True
+        self._saved_geometry = self.root.geometry()
+
+        self.top.pack_forget()
+        self.bottom.pack_forget()
+        self.text.pack_forget()
+        self.caption_bar.pack(fill="x", side="top")
+        self.text.pack(fill="both", expand=True, padx=4, pady=(0, 4))
+
+        self.root.overrideredirect(True)
+        self.root.attributes("-topmost", True)
+        self.root.attributes("-alpha", self.caption_opacity)
+        self._apply_colors(DARK_COLORS)
+        self.root.configure(bg=CAPTION_BAR_BG)
+        self.text_font.configure(size=self.caption_font_size)
+
+        geometry = (self._cfg.get("caption_geometry") or "").strip()
+        if not geometry:
+            screen_w = self.root.winfo_screenwidth()
+            screen_h = self.root.winfo_screenheight()
+            width = int(screen_w * 0.62)
+            height = 190
+            geometry = f"{width}x{height}+{(screen_w - width) // 2}+{screen_h - height - 90}"
+        self.root.geometry(geometry)
+        self._sync_caption_buttons()
+        self.text.see("end")
+
+    def _exit_caption(self) -> None:
+        if not self._caption_mode:
+            return
+        self._save_caption_prefs()
+        self._caption_mode = False
+
+        self.caption_bar.pack_forget()
+        self.text.pack_forget()
+        self.top.pack(fill="x")
+        self.bottom.pack(fill="x", side="bottom")
+        self.text.pack(fill="both", expand=True, padx=8, pady=(0, 4))
+
+        self.root.overrideredirect(False)
+        self.root.attributes("-alpha", 1.0)
+        self.root.attributes("-topmost", self.topmost_var.get())
+        self._apply_colors(LIGHT_COLORS)
+        self.text_font.configure(size=10)
+        if self._saved_geometry:
+            self.root.geometry(self._saved_geometry)
+        self.text.see("end")
+
+    def _save_caption_prefs(self) -> None:
+        self._save_config(
+            caption_opacity=round(float(self.opacity_var.get()), 2),
+            caption_font_size=self.caption_font_size,
+            caption_geometry=self.root.geometry() if self._caption_mode else
+            (self._cfg.get("caption_geometry") or ""),
+        )
+        self._cfg = self._load_config()
+
+    def _on_opacity(self, _value=None) -> None:
+        self.caption_opacity = float(self.opacity_var.get())
+        if self._caption_mode:
+            self.root.attributes("-alpha", self.caption_opacity)
+
+    def _caption_font_step(self, delta: int) -> None:
+        self.caption_font_size = max(10, min(30, self.caption_font_size + delta))
+        if self._caption_mode:
+            self.text_font.configure(size=self.caption_font_size)
+
+    def _sync_caption_buttons(self) -> None:
+        running = self.engine is not None
+        label = "중지" if running else "시작"
+        self.caption_toggle_btn.config(text=label)
+        self.toggle_btn.config(text=label)
+
+    # 드래그 이동 / 크기 조절 (테두리 없는 창용)
+    def _drag_press(self, event) -> None:
+        self._drag_origin = (event.x_root - self.root.winfo_x(),
+                             event.y_root - self.root.winfo_y())
+
+    def _drag_motion(self, event) -> None:
+        if not self._caption_mode or self._drag_origin is None:
+            return
+        dx, dy = self._drag_origin
+        self.root.geometry(f"+{event.x_root - dx}+{event.y_root - dy}")
+
+    def _resize_press(self, event) -> None:
+        self._resize_origin = (event.x_root, event.y_root,
+                               self.root.winfo_width(), self.root.winfo_height())
+
+    def _resize_drag(self, event) -> None:
+        if not self._caption_mode or self._resize_origin is None:
+            return
+        x0, y0, w0, h0 = self._resize_origin
+        width = max(380, w0 + (event.x_root - x0))
+        height = max(110, h0 + (event.y_root - y0))
+        self.root.geometry(f"{width}x{height}")
+
     # ---- 시작/중지 ----
 
     def _on_toggle(self) -> None:
@@ -230,7 +417,9 @@ class RealtimeApp:
         lang = dict(self._langs).get(self.lang_combo.get())
         target = dict(self._trans).get(self.trans_combo.get())
         engine = dict(ENGINES).get(self.engine_combo.get(), "auto")
-        self._save_config(model, lang, target, engine)
+        self._save_config(realtime_model=model, language=lang or "auto",
+                          translation_target=target or "",
+                          realtime_engine=engine)
 
         translator = None
         if target:
@@ -252,9 +441,9 @@ class RealtimeApp:
             self.engine = None
             messagebox.showerror("시작 실패", f"캡처를 시작하지 못했습니다.\n상세: {e}")
             return
-        self.toggle_btn.config(text="중지")
         self._set_settings_enabled(False)
         self.status_var.set("시작됨")
+        self._sync_caption_buttons()
 
     def _on_stop(self) -> None:
         engine = self.engine
@@ -262,7 +451,9 @@ class RealtimeApp:
             return
         self._stopping = True
         self.toggle_btn.config(state="disabled")
+        self.caption_toggle_btn.config(state="disabled")
         self.status_var.set("중지 중...")
+        self._set_caption_status("중지 중...")
 
         def work():
             try:
@@ -278,14 +469,19 @@ class RealtimeApp:
         if self._closing:
             self.root.destroy()
             return
-        self.toggle_btn.config(text="시작", state="normal")
+        self.toggle_btn.config(state="normal")
+        self.caption_toggle_btn.config(state="normal")
         self._set_settings_enabled(True)
         self.status_var.set("대기 중")
+        self._set_caption_status("대기 중")
+        self._sync_caption_buttons()
 
     def _on_close(self) -> None:
         if self._closing:
             return
         self._closing = True
+        if self._caption_mode:
+            self._save_caption_prefs()
         if self.engine is not None:
             if not self._stopping:
                 self._on_stop()  # 완료되면 _on_stopped가 destroy한다
@@ -293,6 +489,12 @@ class RealtimeApp:
             self.root.destroy()
 
     # ---- 이벤트 폴링·표시 ----
+
+    def _set_caption_status(self, msg: str) -> None:
+        try:
+            self.caption_status.config(text=msg)
+        except Exception:
+            pass
 
     def _poll(self) -> None:
         try:
@@ -303,6 +505,7 @@ class RealtimeApp:
                 elif isinstance(ev, tuple) and len(ev) == 2 and ev[0] == "status":
                     if not self._stopping:
                         self.status_var.set(str(ev[1]))
+                        self._set_caption_status(str(ev[1]))
                 elif isinstance(ev, tuple) and len(ev) == 2 and ev[0] == "notice":
                     self._append_notice(str(ev[1]))
         except queue.Empty:
@@ -330,7 +533,20 @@ class RealtimeApp:
         if at_bottom:
             self.text.see("end")
 
-    # ---- 하단 버튼 ----
+    # ---- 복사/저장/지우기 ----
+
+    def _on_copy(self) -> None:
+        content = self.text.get("1.0", "end-1c")
+        if not content.strip():
+            self._flash_status("복사할 내용이 없습니다")
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(content)
+        self._flash_status("클립보드에 복사됨")
+
+    def _flash_status(self, msg: str) -> None:
+        self.status_var.set(msg)
+        self._set_caption_status(msg)
 
     def _on_save(self) -> None:
         if not self.text.get("1.0", "end-1c").strip():
@@ -351,7 +567,7 @@ class RealtimeApp:
         except OSError as e:
             messagebox.showerror("저장 실패", f"파일을 저장하지 못했습니다.\n상세: {e}")
             return
-        self.status_var.set(f"저장 완료: {path}")
+        self._flash_status(f"저장 완료: {path}")
 
     def _on_clear(self) -> None:
         if self.text.get("1.0", "end-1c").strip():
