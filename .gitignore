@@ -22,5 +22,8 @@ test_audio/*.txt
 # 벤치마크용 다운로드 데이터셋 (fetch_datasets.py로 재생성)
 test_audio/datasets/
 
+# 데이터셋 원본 보존 (FLEURS/ESC-50 parquet, 약 5GB — 로컬 전용)
+datasets_raw/
+
 # 비밀 토큰
 token.txt

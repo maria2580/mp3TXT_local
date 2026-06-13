@@ -173,6 +173,30 @@ large-v3-turbo, OpenVINO GPU ([test_audio/bench_datasets.py](test_audio/bench_da
 - 배치 변환: 설정 `frontend_denoise: true`로 켭니다. 전사 입력에만 적용되고
   화자분리는 원본 음성으로 수행해 화자 구분 정확도를 보존합니다.
 
+## 모델 선택: 왜 원본 large-v3-turbo인가
+
+"한국어 파인튜닝 모델이 더 낫지 않냐"는 질문을 실측으로 검증했습니다 —
+**FLEURS held-out**(파인튜닝 학습 도메인과 다른 데이터)으로 한국어 개선과
+영어 보존을 동시에 측정 ([test_audio/bench_finetune_ov.py](test_audio/bench_finetune_ov.py)):
+
+| 데이터셋 | 원본 turbo | ghost613 한국어 파인튜닝 |
+|---|---|---|
+| 한국어 (CER) | **6.1%** | 11.9% (악화) |
+| 영어 (WER) | **5.0%** | 63.8% (붕괴) |
+| 영어 (CER) | **6.9%** | 45.9% (붕괴) |
+
+**결론**: 인기 있는 한국어 파인튜닝(ghost613/whisper-large-v3-turbo-korean)은
+두 언어 모두에서 원본보다 나빴습니다. 두 가지 이유가 동시에 확인됨:
+
+1. **영어 catastrophic forgetting** — 한국어 데이터만 학습해 영어를 잃음
+   (영어 음성을 한국어 음소로 받아쓰며 붕괴).
+2. **한국어조차 도메인 과적합** — 모델 카드의 낮은 CER은 학습 도메인(Zeroth
+   낭독체) 한정 수치이고, 다른 도메인에서는 원본보다 나쁨.
+
+회의·강의·영상처럼 도메인이 다양하고 한·영이 섞이는 실사용에는 **균형 있게
+강건한 원본 large-v3-turbo가 최선**입니다. (in-domain 벤치 수치를 일반화하면
+안 된다는 같은 교훈이 여기서도 반복됨.)
+
 ## 동작 세부 사항
 
 - **CPU 전용 설계**: 이 PC(GPU 없음, i5-1335U) 실측 — 44초 음성을 large-v3-turbo로
