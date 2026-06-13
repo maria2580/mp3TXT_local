@@ -4,3 +4,4 @@ pyaudiowpatch>=0.2.12.5
 argostranslate>=1.9.0
 numpy
 openvino-genai  # 인텔 GPU 전사 백엔드 (실시간 모드)
+noisereduce     # 노이즈 제거 front-end (선택 — 없으면 자동 비활성)

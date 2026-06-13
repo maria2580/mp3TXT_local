@@ -37,11 +37,14 @@ class RealtimeEngine:
 
     def __init__(self, model_name: str, language: Optional[str],
                  translator, event_queue: "queue.Queue",
-                 engine_pref: str = "auto") -> None:
+                 engine_pref: str = "auto", agc: bool = True,
+                 denoise: bool = False) -> None:
         self.model_name = model_name
         self.language = language          # None이면 자동 감지
         self.translator = translator      # Translator 인스턴스 또는 None(번역 끔)
         self.engine_pref = engine_pref    # "auto"|"cuda"|"openvino-gpu"|"cpu"
+        self.agc = agc                    # 조용한 발화 증폭
+        self.denoise = denoise            # 노이즈 제거
         self.event_queue = event_queue
         self._chunk_queue: queue.Queue = queue.Queue()
         self._utterance_queue: queue.Queue = queue.Queue(maxsize=MAX_PENDING_UTTERANCES)
@@ -247,6 +250,9 @@ class RealtimeEngine:
 
     def _transcribe_one(self, transcriber, tag: str, audio,
                         t_start_mono: float) -> None:
+        if self.agc or self.denoise:
+            from ..audio_frontend import enhance
+            audio = enhance(audio, agc=self.agc, denoise=self.denoise)
         segments, lang = transcriber.transcribe_array(audio, **self._extra_opts)
         text = " ".join(s.text.strip() for s in segments).strip()
         if not text:

@@ -256,7 +256,16 @@ def _convert(audio_path, cfg, no_diarization, out_file):
             preview = seg.text if len(seg.text) <= 60 else seg.text[:57] + "..."
             print(f"  [{formatter.fmt_ts(seg.start)}/{formatter.fmt_ts(total_sec)}] {preview}")
 
-        segments, lang = transcriber.transcribe_long(audio, word_timestamps=True,
+        # 전처리는 전사 입력에만 적용한다 — 화자분리는 원본으로 해야
+        # 화자 임베딩이 왜곡되지 않는다 (denoise가 음색을 바꿀 수 있음)
+        tr_audio = audio
+        if cfg.get("frontend_agc", True) or cfg.get("frontend_denoise", False):
+            from mp3txt.audio_frontend import enhance
+            if cfg.get("frontend_denoise"):
+                print("노이즈 제거 적용 중...")
+            tr_audio = enhance(audio, agc=cfg.get("frontend_agc", True),
+                               denoise=cfg.get("frontend_denoise", False))
+        segments, lang = transcriber.transcribe_long(tr_audio, word_timestamps=True,
                                                      on_segment=on_segment)
         print(f"전사 완료: 세그먼트 {len(segments)}개, 언어: {lang}")
 

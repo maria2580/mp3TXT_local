@@ -119,8 +119,13 @@ class RealtimeApp:
         self.loop_combo = ttk.Combobox(self.top, state="readonly", font=ui_font)
         self.loop_combo.grid(row=1, column=1, sticky="ew", padx=(6, 0), pady=2)
 
+        self.denoise_on = tk.BooleanVar(value=bool(self._cfg.get("frontend_denoise")))
+        self.denoise_check = ttk.Checkbutton(
+            self.top, text="노이즈 제거 (시끄러운 환경)", variable=self.denoise_on)
+        self.denoise_check.grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
+
         opts = ttk.Frame(self.top)
-        opts.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        opts.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         ttk.Label(opts, text="모델").pack(side="left")
         self.model_combo = ttk.Combobox(opts, state="readonly", values=MODELS,
                                         width=13, font=ui_font)
@@ -290,6 +295,7 @@ class RealtimeApp:
         self.mic_combo.config(state=combo if self._mics else "disabled")
         self.loop_check.config(state=check if self._loops else "disabled")
         self.loop_combo.config(state=combo if self._loops else "disabled")
+        self.denoise_check.config(state=check)
         for w in (self.model_combo, self.lang_combo, self.trans_combo,
                   self.engine_combo):
             w.config(state=combo)
@@ -417,9 +423,10 @@ class RealtimeApp:
         lang = dict(self._langs).get(self.lang_combo.get())
         target = dict(self._trans).get(self.trans_combo.get())
         engine = dict(ENGINES).get(self.engine_combo.get(), "auto")
+        denoise = bool(self.denoise_on.get())
         self._save_config(realtime_model=model, language=lang or "auto",
                           translation_target=target or "",
-                          realtime_engine=engine)
+                          realtime_engine=engine, frontend_denoise=denoise)
 
         translator = None
         if target:
@@ -434,7 +441,9 @@ class RealtimeApp:
         # 세션마다 새 큐를 쓴다 — 이전 세션의 늦은 이벤트가 새 화면에 섞이지 않게
         self.event_queue = queue.Queue()
         self.engine = RealtimeEngine(model, lang, translator, self.event_queue,
-                                     engine_pref=engine)
+                                     engine_pref=engine,
+                                     agc=bool(self._cfg.get("frontend_agc", True)),
+                                     denoise=denoise)
         try:
             self.engine.start(devices)
         except Exception as e:

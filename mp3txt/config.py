@@ -27,6 +27,8 @@ DEFAULTS = {
     "caption_opacity": 0.85,           # 자막 모드 투명도 (0.3~1.0)
     "caption_font_size": 14,           # 자막 모드 글자 크기
     "caption_geometry": "",            # 자막 모드 창 위치/크기 기억
+    "frontend_agc": True,              # 적응형 게인 (조용한 발화 증폭, 무해)
+    "frontend_denoise": False,         # 노이즈 제거 (노이즈 환경에서 켜기, 지연 증가)
 }
 
 
