@@ -166,8 +166,12 @@ def extract_mp3(video_path: str) -> str | None:
 
 
 def transcribe_file(audio_path: str, no_diarization: bool = False,
-                    save_mp3: bool = False) -> str:
-    """음성/동영상 파일 1개를 전사 + 화자분리해 txt로 저장하고 경로를 돌려준다."""
+                    save_mp3: bool = False, model: str | None = None) -> str:
+    """음성/동영상 파일 1개를 전사 + 화자분리해 txt로 저장하고 경로를 돌려준다.
+
+    model을 주면 이번 변환에 한해 batch_model 설정을 덮어쓴다
+    (예: 시끄러운 한국어 회의는 --model large-v3 로 정확도 우선).
+    """
     from mp3txt import config
 
     audio_path = os.path.abspath(audio_path)
@@ -175,6 +179,8 @@ def transcribe_file(audio_path: str, no_diarization: bool = False,
         raise FileNotFoundError(f"파일이 없습니다: {audio_path}")
 
     cfg = config.load()
+    if model:
+        cfg["batch_model"] = model
     is_video = os.path.splitext(audio_path)[1].lower() in VIDEO_EXTS
     if is_video:
         print(f"동영상 파일: {audio_path}")
@@ -373,13 +379,23 @@ def main():
             paths = [a for a in args if not a.startswith("--")]
             no_diar = "--no-diarization" in args
             save_mp3 = "--save-mp3" in args
+            # --model <이름> 또는 --model=<이름> 으로 이번 변환의 모델 지정
+            model = None
+            for i, a in enumerate(args):
+                if a == "--model" and i + 1 < len(args):
+                    model = args[i + 1]
+                elif a.startswith("--model="):
+                    model = a.split("=", 1)[1]
+            if model:  # --model 다음 값이 paths에 섞여 들어가지 않게 제거
+                paths = [p for p in paths if p != model]
             if not paths:
                 print(f"알 수 없는 옵션: {' '.join(args)}")
                 sys.exit(2)
             for i, path in enumerate(paths):
                 if len(paths) > 1:
                     print(f"\n===== 파일 {i + 1} / {len(paths)} =====")
-                transcribe_file(path, no_diarization=no_diar, save_mp3=save_mp3)
+                transcribe_file(path, no_diarization=no_diar, save_mp3=save_mp3,
+                                model=model)
             time.sleep(3)  # 창이 바로 닫히지 않게 결과를 잠시 보여준다
     except Exception:
         traceback.print_exc()

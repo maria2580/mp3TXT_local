@@ -95,6 +95,7 @@ uv pip install -r requirements.txt --python .venv\Scripts\python.exe
 .venv\Scripts\python.exe mp3txt_local.py "회의.mp3"           # 수동 변환 (여러 파일 가능)
 .venv\Scripts\python.exe mp3txt_local.py "회의.mp3" --no-diarization  # 화자분리 없이
 .venv\Scripts\python.exe mp3txt_local.py "강의.mp4" --save-mp3 # 동영상 변환 + mp3 저장
+.venv\Scripts\python.exe mp3txt_local.py "회의.mp3" --model large-v3  # 시끄러운 회의: 정확도 우선
 .venv\Scripts\python.exe realtime_app.py                      # 실시간 GUI
 ```
 
@@ -196,6 +197,29 @@ large-v3-turbo, OpenVINO GPU ([test_audio/bench_datasets.py](test_audio/bench_da
 회의·강의·영상처럼 도메인이 다양하고 한·영이 섞이는 실사용에는 **균형 있게
 강건한 원본 large-v3-turbo가 최선**입니다. (in-domain 벤치 수치를 일반화하면
 안 된다는 같은 교훈이 여기서도 반복됨.)
+
+### turbo vs large-v3 (full): 언제 어느 것?
+
+turbo와 원본 large-v3(디코더 32층)를 깨끗한 음성과 잡음 환경에서 비교했습니다
+([test_audio/bench_noisy_models.py](test_audio/bench_noisy_models.py), ESC-50 소음):
+
+| 조건 | turbo | large-v3 | 판정 |
+|---|---|---|---|
+| 한국어 깨끗~SNR5 | 5.9~6.6% | 5.9~6.3% | 동급 → turbo(속도 우월) |
+| **한국어 심한 잡음(SNR0)** | 10.0% | **7.3%** | **large-v3 우세 (상대 27%↓)** |
+| 영어 (전 구간) | 6.6~11.4% | 6.4~11.6% | 동급 |
+
+**운영 지침**:
+- **일반 음성·실시간** → `large-v3-turbo` (기본값. 속도 우월, 정확도 동급)
+- **시끄러운 한국어 회의 녹음** → `large-v3` (정확도 크게↑, 단 2~3배 느림)
+
+배치 변환 모델은 설정 `batch_model`로 바꿉니다 (예: `"large-v3"`). GPU PC에서만
+권장 — CPU에서 large-v3는 매우 느립니다. 영어 위주거나 깨끗한 음성이면 바꿀
+이유가 없습니다.
+
+> 검증한 다른 대안들(NVIDIA Canary/Parakeet=한국어 미지원, SeamlessM4T=비상업
+> 라이선스, ENERZAi=비공개)은 모두 부적합. 열린 모델 중 한·영 동시 강건성은
+> Whisper 계열이 여전히 최선입니다.
 
 ## 동작 세부 사항
 
