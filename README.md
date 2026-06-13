@@ -130,6 +130,26 @@ uv pip install --python .venv\Scripts\python.exe nvidia-cublas-cu12 nvidia-cudnn
 
 이후 변환하면 "전사 중... [NVIDIA GPU]"와 "화자분리: NVIDIA GPU 사용"이 표시됩니다.
 
+## 음성 전처리 (front-end)
+
+조용한 발화와 시끄러운 환경에서의 인식을 돕기 위한 전처리를 적용합니다.
+근거가 된 연구와 **실측 결과**:
+
+- **적응형 게인(AGC)** — 음성 구간을 추정해 조용한 발화를 목표 레벨로 끌어올립니다
+  (무음/잡음 구간은 키우지 않음, 클리핑 방지). [AGC for ASR](https://patents.google.com/patent/US20160099007A1/en) 기반. 무해하여 기본 켜짐.
+- **노이즈 제거** — 팬·에어컨 같은 정상 잡음을 억제합니다. RNNoise 계열 연구
+  ([Valin 2018, arXiv:1709.08243](https://arxiv.org/abs/1709.08243))에 근거하며, 구현은 noisereduce(스펙트럼 게이팅).
+- **주의** — Whisper는 노이즈에 강건하지만 noise-invariant가 아니어서
+  ([Whisper-AT, arXiv:2307.03183](https://arxiv.org/html/2307.03183v1)) 과도한 노이즈 제거는 오히려 해가 될 수 있습니다.
+  그래서 노이즈 제거는 **시끄러운 환경에서만 켜는 옵션**(기본 꺼짐)입니다.
+
+실측([test_audio/bench_frontend.py](test_audio/bench_frontend.py)): 노이즈 환경(SNR~5dB) CER **15.6% → 13.8%**,
+깨끗한 음성은 변화 없음(9.0% → 9.0%, 무해 확인).
+
+- 실시간 모드: GUI의 **"노이즈 제거"** 체크박스로 켜고 끕니다 (AGC는 항상 적용).
+- 배치 변환: 설정 `frontend_denoise: true`로 켭니다. 전사 입력에만 적용되고
+  화자분리는 원본 음성으로 수행해 화자 구분 정확도를 보존합니다.
+
 ## 동작 세부 사항
 
 - **CPU 전용 설계**: 이 PC(GPU 없음, i5-1335U) 실측 — 44초 음성을 large-v3-turbo로
