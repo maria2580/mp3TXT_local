@@ -19,5 +19,8 @@ test_audio/*.mkv
 test_audio/*.wav
 test_audio/*.txt
 
+# 벤치마크용 다운로드 데이터셋 (fetch_datasets.py로 재생성)
+test_audio/datasets/
+
 # 비밀 토큰
 token.txt
