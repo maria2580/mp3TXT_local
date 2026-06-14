@@ -25,5 +25,8 @@ test_audio/datasets/
 # 데이터셋 원본 보존 (FLEURS/ESC-50 parquet, 약 5GB — 로컬 전용)
 datasets_raw/
 
+# 학습된 고스트 어댑터 가중치 (재학습 가능)
+train/*.pt
+
 # 비밀 토큰
 token.txt
