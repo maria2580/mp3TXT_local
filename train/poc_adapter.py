@@ -103,6 +103,7 @@ def main():
     # 어댑터 학습 안정성에도 fp32가 유리 (turbo 809M은 24GB GPU에 여유).
     model = WhisperForConditionalGeneration.from_pretrained(args.model).to(device).float()
     model, trainable = attach_ghost(model, n_layers=args.layers)
+    model = model.to(device)  # 새로 부착한 고스트 블록도 GPU로 (기본 CPU 생성)
     n_train_p = sum(p.numel() for p in trainable)
     print(f"학습 파라미터(고스트만): {n_train_p:,}")
 
