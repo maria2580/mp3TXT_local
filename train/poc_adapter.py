@@ -88,7 +88,9 @@ def main():
     ap.add_argument("--train", type=int, default=12, help="학습 발화 수(한국어)")
     ap.add_argument("--heldout", type=int, default=8, help="검증 발화 수")
     ap.add_argument("--steps", type=int, default=30)
-    ap.add_argument("--lr", type=float, default=3e-4)  # 보수적 — 과적합/발산 방지
+    ap.add_argument("--lr", type=float, default=1e-4)  # 보수적 — 과적합/발산 방지
+    ap.add_argument("--clip", type=float, default=1.0, help="grad clip norm")
+    ap.add_argument("--eval_every", type=int, default=200, help="held-out 평가 주기")
     ap.add_argument("--layers", type=int, default=4)
     ap.add_argument("--snr", type=float, default=0.0, help="잡음 SNR(dB)")
     ap.add_argument("--save", default="")
@@ -129,57 +131,72 @@ def main():
         examples.append(make_example("fleurs", row, noisy=True))   # 보정
     print(f"학습 예제: {len(examples)}개 (리허설 {len(train_ko)} + 보정 {len(train_ko)})")
 
-    # 학습 루프 (배치 1, teacher forcing)
-    opt = torch.optim.AdamW(trainable, lr=args.lr)
-    model.train()
-    for p in model.parameters():
-        pass
-    for step in range(args.steps):
-        feats, labels = examples[step % len(examples)]
-        feats = feats.unsqueeze(0).to(device)
-        labels = labels.unsqueeze(0).to(device)
-        out = model(input_features=feats, labels=labels)
-        loss = out.loss
-        opt.zero_grad()
-        loss.backward()
-        opt.step()
-        if step % max(1, args.steps // 10) == 0 or step == args.steps - 1:
-            print(f"  step {step:4d}  loss {loss.item():.4f}")
-
-    # 검증: base(고스트 off) vs ghost(고스트 on) — 고스트를 0으로 되돌려 base 모사
-    model.eval()
-
+    # ---- 평가 함수 (학습 전후 공용) ----
     def transcribe(feats):
         with torch.no_grad():
             ids = model.generate(feats.unsqueeze(0).to(device), max_new_tokens=128)
         return proc.batch_decode(ids, skip_special_tokens=True)[0].strip()
 
     def eval_set(rows, subdir, noisy, metric):
+        ev = np.random.RandomState(123)  # 평가용 고정 노이즈 (학습 rng와 분리)
         scores = []
         for row in rows:
             audio = load_audio(subdir, row["id"])
             if noisy:
-                audio = mix_noise(audio, noises[rng.randint(len(noises))], args.snr)
+                audio = mix_noise(audio, noises[ev.randint(len(noises))], args.snr)
             feats = proc(audio, sampling_rate=16000, return_tensors="pt").input_features[0]
             scores.append(metric(row["text"], transcribe(feats)))
         return float(np.mean(scores))
 
-    # 고스트 가중치 백업 후 0으로 만들어 base 성능 측정, 다시 복원
-    ghost_state = {k: v.clone() for k, v in model.proj_out.blocks.state_dict().items()}
-    with torch.no_grad():
-        for blk in model.proj_out.blocks:
-            blk.up.weight.zero_(); blk.up.bias.zero_()
-    base = {
-        "잡음 한국어 CER": eval_set(held_ko, "fleurs", True, cer),
-        "깨끗 한국어 CER": eval_set(held_ko, "fleurs", False, cer),
-        "영어 WER": eval_set(held_en, "fleurs_en", False, wer),
-    }
-    model.proj_out.blocks.load_state_dict(ghost_state)  # 학습된 고스트 복원
-    ghost = {
-        "잡음 한국어 CER": eval_set(held_ko, "fleurs", True, cer),
-        "깨끗 한국어 CER": eval_set(held_ko, "fleurs", False, cer),
-        "영어 WER": eval_set(held_en, "fleurs_en", False, wer),
-    }
+    def evaluate():
+        model.eval()
+        m = {"잡음 한국어 CER": eval_set(held_ko, "fleurs", True, cer),
+             "깨끗 한국어 CER": eval_set(held_ko, "fleurs", False, cer),
+             "영어 WER": eval_set(held_en, "fleurs_en", False, wer)}
+        model.train()
+        return m
+
+    # base = 고스트 0-init(=학습 전) 성능
+    base = evaluate()
+    print(f"[base] 잡음ko {base['잡음 한국어 CER']:.1f} | 깨끗ko "
+          f"{base['깨끗 한국어 CER']:.1f} | 영어 {base['영어 WER']:.1f}")
+
+    def penalty(m):  # 잡음 보정을 보되, 깨끗·영어 퇴보엔 큰 벌점 (보존 우선)
+        return (m["잡음 한국어 CER"]
+                + 3 * max(0.0, m["깨끗 한국어 CER"] - base["깨끗 한국어 CER"])
+                + 3 * max(0.0, m["영어 WER"] - base["영어 WER"]))
+
+    # 학습 (배치 1, teacher forcing, grad clip, 주기적 평가로 best 선택)
+    opt = torch.optim.AdamW(trainable, lr=args.lr)
+    best_state = {k: v.clone() for k, v in model.proj_out.blocks.state_dict().items()}
+    best_pen, best_step = penalty(base), 0
+    model.train()
+    for step in range(1, args.steps + 1):
+        feats, labels = examples[step % len(examples)]
+        out = model(input_features=feats.unsqueeze(0).to(device),
+                    labels=labels.unsqueeze(0).to(device))
+        opt.zero_grad()
+        out.loss.backward()
+        torch.nn.utils.clip_grad_norm_(trainable, args.clip)
+        opt.step()
+        if step % args.eval_every == 0 or step == args.steps:
+            m = evaluate()
+            pen = penalty(m)
+            tag = ""
+            if pen < best_pen:
+                best_pen, best_step = pen, step
+                best_state = {k: v.clone()
+                              for k, v in model.proj_out.blocks.state_dict().items()}
+                tag = " *best"
+            print(f"  step {step:4d} loss {out.loss.item():.3f} | 잡음ko "
+                  f"{m['잡음 한국어 CER']:.1f} 깨끗ko {m['깨끗 한국어 CER']:.1f} "
+                  f"영어 {m['영어 WER']:.1f}{tag}")
+
+    # best 고스트 복원 → 최종 보고
+    print(f"\nbest = step {best_step}")
+    model.proj_out.blocks.load_state_dict(best_state)
+    ghost_state = best_state
+    ghost = evaluate()
 
     print(f"\n{'지표':<18}{'base':>9}{'+고스트':>10}{'변화':>9}  목표")
     print("-" * 56)
