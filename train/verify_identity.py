@@ -6,12 +6,13 @@
 
 실행: .venv-ov\\Scripts\\python.exe train\\verify_identity.py
 """
+import os
 import sys
 
 import numpy as np
 import torch
 
-sys.path.insert(0, r"C:\Users\user\mp3TXT_local\train")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ghost_whisper import attach_ghost
 
 

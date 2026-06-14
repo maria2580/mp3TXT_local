@@ -24,10 +24,12 @@ import sys
 import numpy as np
 import torch
 
-sys.path.insert(0, r"C:\Users\user\mp3TXT_local\train")
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
+sys.path.insert(0, _HERE)
 from ghost_whisper import attach_ghost  # noqa: E402
 
-DATA = r"C:\Users\user\mp3TXT_local\test_audio\datasets"
+DATA = os.path.join(_ROOT, "test_audio", "datasets")
 
 
 def cer(ref, hyp):

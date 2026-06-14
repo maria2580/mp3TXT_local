@@ -13,7 +13,7 @@ import sys
 
 import numpy as np
 
-OUT = r"C:\Users\user\mp3TXT_local\test_audio\datasets"
+OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "datasets")
 SR = 16000
 
 
@@ -42,13 +42,13 @@ def decode_audio_field(a):
     return resample(np.asarray(data, dtype=np.float32), sr)
 
 
-def fetch_fleurs(n_samples: int):
+def fetch_fleurs(n_samples: int, config: str = "ko_kr", subdir: str = "fleurs"):
     from datasets import Audio, load_dataset
 
-    print(f"FLEURS ko_kr test 다운로드 중... (목표 {n_samples}개)")
-    ds = load_dataset("google/fleurs", "ko_kr", split="test")
+    print(f"FLEURS {config} test 다운로드 중... (목표 {n_samples}개)")
+    ds = load_dataset("google/fleurs", config, split="test")
     ds = ds.cast_column("audio", Audio(decode=False))  # torchcodec 우회
-    d = os.path.join(OUT, "fleurs")
+    d = os.path.join(OUT, subdir)
     os.makedirs(d, exist_ok=True)
     meta = []
     for i, row in enumerate(ds):
