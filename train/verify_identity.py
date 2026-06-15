@@ -13,7 +13,7 @@ import numpy as np
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ghost_whisper import attach_ghost
+from ghost_whisper import attach_ghost, first_up_weight
 
 
 def main():
@@ -51,8 +51,8 @@ def main():
 
     # 비-0 가중치를 주면 출력이 바뀌는지(학습 여지가 있는지)도 확인
     with torch.no_grad():
-        blk = model.proj_out.blocks[0]
-        blk.up.weight.add_(torch.randn_like(blk.up.weight) * 0.01)
+        w = first_up_weight(model)
+        w.add_(torch.randn_like(w) * 0.01)
         changed_logits = model(feats, decoder_input_ids=dec_ids).logits
     diff2 = (base_logits - changed_logits).abs().max().item()
     print(f"가중치 교란 후 차이: {diff2:.2e} (>0이어야 학습 가능)")

@@ -1,16 +1,15 @@
 # -*- coding: utf-8 -*-
-"""고스트 레이어(zero-init residual adapter)를 Whisper에 끼우는 모듈.
+"""고스트 어댑터(zero-init residual adapter)를 Whisper 디코더 레이어에 끼우는 모듈.
 
-설계:
-- 디코더 출력 hidden state와 lm_head(proj_out) 사이에 N겹의 잔차 블록을 끼운다.
-- 각 블록은 `x = x + Wup(GELU(Wdown(LayerNorm(x))))` 이고, **Wup을 0으로 초기화**해
-  학습 시작 시점엔 delta=0 → 완벽한 항등(원본과 비트 단위 동일 출력)이다.
-  (ControlNet의 zero-conv, LoRA의 B행렬 0-초기화와 같은 원리)
-- base 가중치는 전부 동결하고 고스트 블록만 학습한다.
-- 틀린 케이스는 보정하도록, 맞은 케이스는 유지(리허설)하도록 학습한다.
-
-inference 스택(faster-whisper/OpenVINO)은 학습 불가라, 학습은 여기 PyTorch
-transformers로 하고 끝나면 병합·변환해 배포한다.
+설계 (v2 — 레이어 내부 배치):
+- 마지막 N개 디코더 레이어를 감싸, 각 레이어 출력 hidden state에 잔차 보정을 더한다:
+  `h = layer(...); h = h + Wup(GELU(Wdown(LayerNorm(h))))`
+- **Wup을 0으로 초기화** → 시작 시 delta=0 → 완벽한 항등(원본과 비트 단위 동일).
+- v1은 어댑터를 lm_head 직전(출력 사영 바로 앞)에 뒀는데, 그 자리가 자기회귀
+  생성에 지나치게 민감해 작은 변화도 반복 루프를 유발했다(PoC에서 확인). 그래서
+  표준 어댑터 위치인 **디코더 레이어 내부(FFN 뒤)** 로 옮겼다.
+- base 가중치는 전부 동결, 어댑터만 학습. KV 캐시는 원본 레이어가 계산하고
+  어댑터는 hidden state만 후처리하므로 generation 캐싱과 호환된다.
 """
 from __future__ import annotations
 
@@ -27,55 +26,67 @@ class GhostBlock(nn.Module):
         self.down = nn.Linear(d_model, bottleneck)
         self.act = nn.GELU()
         self.up = nn.Linear(bottleneck, d_model)
-        # 핵심: up을 0으로 초기화 → delta=0 → 시작 시 완벽한 항등
-        nn.init.zeros_(self.up.weight)
+        nn.init.zeros_(self.up.weight)  # 핵심: delta=0 → 시작 시 완벽한 항등
         nn.init.zeros_(self.up.bias)
 
     def forward(self, x):
         return x + self.up(self.act(self.down(self.norm(x))))
 
 
-class GhostStack(nn.Module):
-    """N겹 고스트 블록 + 원본 proj_out. 고스트를 통과시킨 뒤 어휘로 사영한다."""
+class LayerGhost(nn.Module):
+    """디코더 레이어를 감싸 출력 hidden state에 고스트 보정을 더한다."""
 
-    def __init__(self, proj_out: nn.Module, d_model: int,
-                 n_layers: int = 4, bottleneck: int = 256):
+    def __init__(self, layer: nn.Module, d_model: int, bottleneck: int):
         super().__init__()
-        self.blocks = nn.ModuleList(
-            [GhostBlock(d_model, bottleneck) for _ in range(n_layers)])
-        self.proj_out = proj_out  # 원본 lm_head (동결)
+        self.layer = layer
+        self.adapter = GhostBlock(d_model, bottleneck)
 
-    def forward(self, hidden):
-        for block in self.blocks:
-            hidden = block(hidden)
-        return self.proj_out(hidden)
+    def forward(self, *args, **kwargs):
+        out = self.layer(*args, **kwargs)
+        if isinstance(out, tuple):
+            return (self.adapter(out[0]),) + out[1:]
+        return self.adapter(out)
 
 
 def attach_ghost(model, n_layers: int = 4, bottleneck: int = 256):
-    """WhisperForConditionalGeneration에 고스트 스택을 끼우고 base를 동결한다.
+    """마지막 N개 디코더 레이어를 고스트로 감싸고 base를 동결한다.
 
-    proj_out을 GhostStack으로 교체하므로 generate()도 자동으로 고스트를 거친다.
-    학습 대상은 고스트 블록뿐. 돌려주는 것은 (model, 학습가능 파라미터 리스트).
+    돌려주는 것: (model, 학습가능 파라미터 리스트). 학습 대상은 어댑터뿐.
     """
     d_model = model.config.d_model
-    ghost = GhostStack(model.proj_out, d_model, n_layers, bottleneck)
-    model.proj_out = ghost
+    layers = model.model.decoder.layers
+    n = min(n_layers, len(layers))
+    wrapped = []
+    for i in range(len(layers) - n, len(layers)):
+        lg = LayerGhost(layers[i], d_model, bottleneck)
+        layers[i] = lg
+        wrapped.append(lg)
+    model._ghost_wrapped = wrapped  # 상태 저장/복원 핸들
 
-    # base 전부 동결, 고스트 블록만 학습
     for p in model.parameters():
         p.requires_grad = False
     trainable = []
-    for block in ghost.blocks:
-        for p in block.parameters():
+    for lg in wrapped:
+        for p in lg.adapter.parameters():
             p.requires_grad = True
             trainable.append(p)
     return model, trainable
 
 
-def ghost_state_dict(model) -> dict:
-    """학습된 고스트 블록 가중치만 추출 (배포·재로딩용, 수 MB)."""
-    return {k: v.cpu() for k, v in model.proj_out.blocks.state_dict().items()}
+def ghost_state(model) -> dict:
+    """학습된 어댑터 가중치만 추출 (배포·재로딩용, 수 MB)."""
+    return {f"{i}.{k}": v.detach().cpu().clone()
+            for i, lg in enumerate(model._ghost_wrapped)
+            for k, v in lg.adapter.state_dict().items()}
 
 
-def load_ghost(model, state: dict) -> None:
-    model.proj_out.blocks.load_state_dict(state)
+def load_ghost_state(model, state: dict) -> None:
+    for i, lg in enumerate(model._ghost_wrapped):
+        prefix = f"{i}."
+        sub = {k[len(prefix):]: v for k, v in state.items() if k.startswith(prefix)}
+        lg.adapter.load_state_dict(sub)
+
+
+def first_up_weight(model) -> "torch.Tensor":
+    """검증용: 첫 어댑터의 up.weight 핸들 (교란 테스트에 사용)."""
+    return model._ghost_wrapped[0].adapter.up.weight

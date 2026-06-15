@@ -27,7 +27,7 @@ import torch
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
 sys.path.insert(0, _HERE)
-from ghost_whisper import attach_ghost  # noqa: E402
+from ghost_whisper import attach_ghost, ghost_state, load_ghost_state  # noqa: E402
 
 DATA = os.path.join(_ROOT, "test_audio", "datasets")
 
@@ -168,7 +168,7 @@ def main():
 
     # 학습 (배치 1, teacher forcing, grad clip, 주기적 평가로 best 선택)
     opt = torch.optim.AdamW(trainable, lr=args.lr)
-    best_state = {k: v.clone() for k, v in model.proj_out.blocks.state_dict().items()}
+    best_state = ghost_state(model)
     best_pen, best_step = penalty(base), 0
     model.train()
     for step in range(1, args.steps + 1):
@@ -185,8 +185,7 @@ def main():
             tag = ""
             if pen < best_pen:
                 best_pen, best_step = pen, step
-                best_state = {k: v.clone()
-                              for k, v in model.proj_out.blocks.state_dict().items()}
+                best_state = ghost_state(model)
                 tag = " *best"
             print(f"  step {step:4d} loss {out.loss.item():.3f} | 잡음ko "
                   f"{m['잡음 한국어 CER']:.1f} 깨끗ko {m['깨끗 한국어 CER']:.1f} "
@@ -194,8 +193,8 @@ def main():
 
     # best 고스트 복원 → 최종 보고
     print(f"\nbest = step {best_step}")
-    model.proj_out.blocks.load_state_dict(best_state)
-    ghost_state = best_state
+    load_ghost_state(model, best_state)
+    saved_state = best_state
     ghost = evaluate()
 
     print(f"\n{'지표':<18}{'base':>9}{'+고스트':>10}{'변화':>9}  목표")
@@ -208,7 +207,7 @@ def main():
 
     if args.save:
         os.makedirs(os.path.dirname(args.save) or ".", exist_ok=True)
-        torch.save(ghost_state, args.save)
+        torch.save(saved_state, args.save)
         print(f"\n고스트 가중치 저장: {args.save}")
 
 
