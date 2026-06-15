@@ -91,6 +91,8 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-4)  # 보수적 — 과적합/발산 방지
     ap.add_argument("--clip", type=float, default=1.0, help="grad clip norm")
     ap.add_argument("--eval_every", type=int, default=200, help="held-out 평가 주기")
+    ap.add_argument("--en_rehearsal", type=int, default=80,
+                    help="영어 리허설 발화 수 (forgetting 방지)")
     ap.add_argument("--layers", type=int, default=4)
     ap.add_argument("--snr", type=float, default=0.0, help="잡음 SNR(dB)")
     ap.add_argument("--save", default="")
@@ -125,11 +127,18 @@ def main():
         labels = proc.tokenizer(row["text"], return_tensors="pt").input_ids[0]
         return feats, labels
 
+    # 영어 리허설용 발화 (held-out과 겹치지 않게 heldout 이후 구간 사용)
+    train_en = load_meta("fleurs_en", args.heldout + args.en_rehearsal)[args.heldout:]
+
     examples = []
     for row in train_ko:
-        examples.append(make_example("fleurs", row, noisy=False))  # 리허설
-        examples.append(make_example("fleurs", row, noisy=True))   # 보정
-    print(f"학습 예제: {len(examples)}개 (리허설 {len(train_ko)} + 보정 {len(train_ko)})")
+        examples.append(make_example("fleurs", row, noisy=False))   # 한국어 리허설
+        examples.append(make_example("fleurs", row, noisy=True))    # 한국어 잡음 보정
+    for row in train_en:
+        examples.append(make_example("fleurs_en", row, noisy=False))  # 영어 리허설
+    rng.shuffle(examples)  # 한·영을 섞어 한쪽으로 치우치지 않게
+    print(f"학습 예제: {len(examples)}개 "
+          f"(한국어 리허설 {len(train_ko)} + 잡음보정 {len(train_ko)} + 영어 리허설 {len(train_en)})")
 
     # ---- 평가 함수 (학습 전후 공용) ----
     def transcribe(feats):
