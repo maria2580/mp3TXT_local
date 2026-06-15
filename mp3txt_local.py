@@ -210,21 +210,70 @@ def transcribe_file(audio_path: str, no_diarization: bool = False,
     return out_path
 
 
+def _resolve_batch_engine(cfg) -> str:
+    """배치 전사 엔진 결정: NVIDIA CUDA > 인텔 GPU(OpenVINO) > CPU.
+
+    설정 batch_engine으로 강제 가능("auto"|"cuda"|"openvino-gpu"|"cpu").
+    인텔 GPU는 OpenVINO 변환 모델이 있어야 후보가 된다.
+    """
+    from mp3txt import config, engine_select
+
+    pref = cfg.get("batch_engine", "auto")
+    if pref == "cpu":
+        return "cpu"
+    if pref in ("cuda", "openvino-gpu"):
+        return pref
+    if engine_select.cuda_device_count() > 0:
+        return "cuda"
+    if (engine_select.openvino_gpu_available()
+            and os.path.isdir(config.openvino_model_dir(cfg))):
+        return "openvino-gpu"
+    return "cpu"
+
+
+def _build_batch_transcriber(cfg, engine):
+    """엔진에 맞는 전사기를 만들어 로드한다. 실패 시 CPU로 강등.
+
+    돌려주는 것: (transcriber, 실제_엔진, 라벨, 워드타임스탬프_지원여부)
+    """
+    from mp3txt import config
+    from mp3txt.transcribe import Transcriber
+
+    if engine == "openvino-gpu":
+        try:
+            from mp3txt.transcribe_ov import OvTranscriber
+            tr = OvTranscriber(config.openvino_model_dir(cfg), language=cfg["language"])
+            tr.ensure_model()
+            return tr, "openvino-gpu", "인텔 GPU(OpenVINO, turbo)", False
+        except Exception as e:
+            print(f"안내: 인텔 GPU 로드 실패 — CPU로 전환합니다. ({e})")
+            engine = "cpu"
+    if engine == "cuda":
+        try:
+            tr = Transcriber(cfg["batch_model"], cfg["compute_type"],
+                             cfg["language"], device="cuda")
+            tr.ensure_model()
+            return tr, "cuda", "NVIDIA GPU", True
+        except Exception as e:
+            print(f"안내: NVIDIA GPU 로드 실패 — CPU로 전환합니다. ({e})")
+            engine = "cpu"
+    tr = Transcriber(cfg["batch_model"], cfg["compute_type"], cfg["language"])
+    tr.ensure_model()
+    return tr, "cpu", f"CPU {cfg['compute_type']}", True
+
+
 def _convert(audio_path, cfg, no_diarization, out_file):
     """디코드 → 화자분리 → 전사 → 포맷 저장. 화자 구간(turns)을 돌려준다."""
     from mp3txt import audio_io, config, diarize, formatter
-    from mp3txt.transcribe import Transcriber
 
     with out_file, ConvertSlot():
         t0 = time.time()
         print("오디오 디코드 중...")
         audio = audio_io.load_audio(audio_path)
         total_sec = audio_io.duration_sec(audio)
-        from mp3txt import engine_select
-        device = "cuda" if engine_select.cuda_device_count() > 0 else "cpu"
-        engine_label = "NVIDIA GPU" if device == "cuda" else f"CPU {cfg['compute_type']}"
-        print(f"길이: {formatter.fmt_ts(total_sec)}  "
-              f"(모델: {cfg['batch_model']}, {engine_label})")
+        engine = _resolve_batch_engine(cfg)
+        model_name = "large-v3-turbo" if engine == "openvino-gpu" else cfg["batch_model"]
+        print(f"길이: {formatter.fmt_ts(total_sec)}  (모델: {model_name}, 엔진 준비 중...)")
 
         # 1) 화자분리 (토큰 없으면 None → 타임스탬프만)
         turns = None
@@ -238,25 +287,11 @@ def _convert(audio_path, cfg, no_diarization, out_file):
                 n = len({t[2] for t in turns})
                 print(f"화자분리 완료: 화자 {n}명, 구간 {len(turns)}개")
 
-        # 2) 전사 (세그먼트가 나올 때마다 진행 상황 출력)
-        # NVIDIA GPU(CUDA)가 있으면 사용, 로드 실패 시 CPU로 강등.
-        # (인텔 GPU는 워드 타임스탬프 미지원이라 배치에는 쓰지 않는다 —
-        #  화자분리 정렬 정밀도가 우선)
-        if device == "cuda":
-            print("전사 중... [NVIDIA GPU] (최초 실행 시 모델 다운로드)")
-        else:
-            print("전사 중... (최초 실행 시 모델 다운로드)")
-        transcriber = Transcriber(cfg["batch_model"], cfg["compute_type"],
-                                  cfg["language"], device=device)
-        try:
-            transcriber.ensure_model()
-        except Exception as e:
-            if device != "cuda":
-                raise
-            print(f"안내: NVIDIA GPU 로드 실패 — CPU로 전환합니다. ({e})")
-            transcriber = Transcriber(cfg["batch_model"], cfg["compute_type"],
-                                      cfg["language"])
-            transcriber.ensure_model()
+        # 2) 전사 — 엔진 자동 선택: NVIDIA CUDA > 인텔 GPU(OpenVINO) > CPU
+        # 인텔 GPU 경로는 워드 타임스탬프가 없어 화자 배정이 세그먼트 단위가 된다
+        # (화자 구분 자체는 됨, 경계 정밀도만 약간 낮아짐).
+        transcriber, engine, engine_label, word_ts = _build_batch_transcriber(cfg, engine)
+        print(f"전사 중... [{engine_label}]")
 
         def on_segment(seg):
             preview = seg.text if len(seg.text) <= 60 else seg.text[:57] + "..."
@@ -271,7 +306,7 @@ def _convert(audio_path, cfg, no_diarization, out_file):
                 print("노이즈 제거 적용 중...")
             tr_audio = enhance(audio, agc=cfg.get("frontend_agc", True),
                                denoise=cfg.get("frontend_denoise", False))
-        segments, lang = transcriber.transcribe_long(tr_audio, word_timestamps=True,
+        segments, lang = transcriber.transcribe_long(tr_audio, word_timestamps=word_ts,
                                                      on_segment=on_segment)
         print(f"전사 완료: 세그먼트 {len(segments)}개, 언어: {lang}")
 

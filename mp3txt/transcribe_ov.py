@@ -88,3 +88,45 @@ class OvTranscriber:
         lang = self.language or _guess_lang(text)
         duration = float(len(audio)) / 16000.0
         return [Segment(0.0, duration, text, [])], lang
+
+    def transcribe_long(self, audio: np.ndarray, word_timestamps: bool = True,
+                        on_segment=None) -> tuple[list[Segment], str]:
+        """긴 오디오(파일)를 세그먼트 타임스탬프와 함께 전사한다.
+
+        OpenVINO genai의 return_timestamps로 30초 초과 오디오를 자동 청크 처리하고
+        각 청크의 시작/끝 시각을 얻는다. 워드 단위 타임스탬프는 없으므로
+        (word_timestamps 인자는 무시) 화자 배정은 세그먼트 단위로 이뤄진다.
+        """
+        self.ensure_model()
+        config = self._pipe.get_generation_config()
+        config.task = "transcribe"
+        config.return_timestamps = True
+        if self.language in _LANG_TOKEN:
+            config.language = _LANG_TOKEN[self.language]
+        result = self._pipe.generate(audio.astype(np.float32), config)
+
+        segments: list[Segment] = []
+        chunks = getattr(result, "chunks", None)
+        if chunks:
+            for ch in chunks:
+                text = (ch.text or "").strip()
+                if not text:
+                    continue
+                start = float(getattr(ch, "start_ts", 0.0) or 0.0)
+                end = float(getattr(ch, "end_ts", start) or start)
+                if end < start:  # genai가 끝 시각을 -1로 줄 때 보정
+                    end = float(len(audio)) / 16000.0
+                seg = Segment(start, end, text, [])
+                segments.append(seg)
+                if on_segment is not None:
+                    on_segment(seg)
+        else:  # 타임스탬프 미지원 빌드 폴백 — 전체를 한 세그먼트로
+            text = str(result).strip()
+            if text:
+                seg = Segment(0.0, float(len(audio)) / 16000.0, text, [])
+                segments.append(seg)
+                if on_segment is not None:
+                    on_segment(seg)
+
+        lang = self.language or (_guess_lang(segments[0].text) if segments else "ko")
+        return segments, lang

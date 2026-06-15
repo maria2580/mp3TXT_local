@@ -22,6 +22,7 @@ DEFAULTS = {
     "translation_target": "ko",        # 실시간 번역 대상 언어
     "num_speakers": None,              # 화자 수를 알면 지정 (None=자동)
     "save_mp3_from_video": False,      # 동영상 변환 시 mp3도 같이 저장
+    "batch_engine": "auto",            # 배치 전사 엔진 "auto"|"cuda"|"openvino-gpu"|"cpu"
     "realtime_engine": "auto",         # "auto"|"cuda"|"openvino-gpu"|"cpu"
     "openvino_model_dir": "",          # 비우면 <프로젝트>\models\whisper-large-v3-turbo-int8-ov
     "caption_opacity": 0.85,           # 자막 모드 투명도 (0.3~1.0)
