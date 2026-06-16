@@ -163,6 +163,7 @@ def main():
     set_ghost_active(model, True)
     model.train()
     for step in range(1, args.steps + 1):
+        set_ghost_active(model, True)  # 평가가 게이트를 off로 남겼을 수 있어 매 스텝 복원
         feats, labels = examples[step % len(examples)]
         out = model(input_features=feats.unsqueeze(0).to(device),
                     labels=labels.unsqueeze(0).to(device))
