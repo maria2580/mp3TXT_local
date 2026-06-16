@@ -34,18 +34,31 @@ class GhostBlock(nn.Module):
 
 
 class LayerGhost(nn.Module):
-    """디코더 레이어를 감싸 출력 hidden state에 고스트 보정을 더한다."""
+    """디코더 레이어를 감싸 출력 hidden state에 고스트 보정을 더한다.
+
+    active=False면 어댑터를 우회해 원본 레이어 출력을 그대로 낸다 — 언어 게이트
+    (한국어 외 언어는 우회 → 원본과 비트 단위 동일, 보존 *보장*)에 쓴다.
+    """
 
     def __init__(self, layer: nn.Module, d_model: int, bottleneck: int):
         super().__init__()
         self.layer = layer
         self.adapter = GhostBlock(d_model, bottleneck)
+        self.active = True
 
     def forward(self, *args, **kwargs):
         out = self.layer(*args, **kwargs)
+        if not self.active:
+            return out
         if isinstance(out, tuple):
             return (self.adapter(out[0]),) + out[1:]
         return self.adapter(out)
+
+
+def set_ghost_active(model, active: bool) -> None:
+    """고스트 활성/우회 전환. 비활성 시 모든 어댑터가 원본 출력을 그대로 통과."""
+    for lg in model._ghost_wrapped:
+        lg.active = bool(active)
 
 
 def attach_ghost(model, n_layers: int = 4, bottleneck: int = 256):
